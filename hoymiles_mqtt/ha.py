@@ -190,6 +190,7 @@ class HassMqtt:
         else:
             entity_prefix = device_name
         for entity_name, entity_definition in entity_definitions.items():
+            state_topic = self._get_state_topic(device_serial_number, port)
             config_payload = {
                 "device": {
                     "name": f"{device_name}_{device_serial_number}",
@@ -198,8 +199,10 @@ class HassMqtt:
                 },
                 "name": f"{entity_prefix}_{device_serial_number}_{entity_name}",
                 "unique_id": f"hoymiles_mqtt_{entity_prefix}_{device_serial_number}_{entity_name}",
-                "state_topic": self._get_state_topic(device_serial_number, port),
-                "value_template": "{{ value_json.%s }}" % entity_name,
+                "state_topic": state_topic,
+                "value_template": f"{{{{ iif(value_json.{entity_name} is defined, value_json.{entity_name}, '') }}}}",
+                "availability_topic": state_topic,
+                "availability_template": f"{{{{ iif(value_json.{entity_name} is defined, 'online', 'offline') }}}}",
             }
             if entity_definition.device_class:
                 config_payload['device_class'] = entity_definition.device_class
