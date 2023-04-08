@@ -30,11 +30,12 @@ class MqttPublisher:
             retain: if the message shall be retained by MQTT broker
 
         """
-        publish_single(
-            topic=topic,
-            payload=message,
-            hostname=self._mqtt_broker,
-            port=self._mqtt_port,
-            auth=self._auth,
-            retain=retain,
-        )
+        if message:
+            publish_single(
+                topic=topic,
+                payload=message,
+                hostname=self._mqtt_broker,
+                port=self._mqtt_port,
+                auth=self._auth,
+                retain=retain,
+            )
