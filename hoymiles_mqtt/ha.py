@@ -35,6 +35,16 @@ def _ignore_on_operating_status(data, _):
         ignore = True
     return ignore
 
+def _ignore_on_operating_status_and_zero(data, entity_name):
+    ignore = False
+    if getattr(data, 'operating_status') != 3 and getattr(data, 'link_status') == 1:
+        ignore = True
+
+    if _ignore_when_zero(data, entity_name):
+    	ignore = True
+
+    return ignore
+
 
 def _ignore_when_zero(data, entity_name):
     return True if getattr(data, entity_name) == ZERO else False
@@ -102,17 +112,23 @@ PortEntities = {
         unit=UNIT_WATS_PER_HOUR,
         state_class=STATE_CLASS_TOTAL_INCREASING,
         expire=False,
+        ignore_rule=_ignore_on_operating_status_and_zero,
     ),
     'total_production': EntityDescription(
         device_class=DEVICE_CLASS_ENERGY,
         unit=UNIT_WATS_PER_HOUR,
         state_class=STATE_CLASS_TOTAL_INCREASING,
         expire=False,
+        ignore_rule=_ignore_on_operating_status_and_zero,        
     ),
 }
 
 DtuEntities = {
-    'pv_power': EntityDescription(device_class=DEVICE_CLASS_POWER, unit=UNIT_WATS, state_class=STATE_CLASS_MEASUREMENT),
+    'pv_power': EntityDescription(
+        device_class=DEVICE_CLASS_POWER,
+        unit=UNIT_WATS,
+        state_class=STATE_CLASS_MEASUREMENT,
+    ),
     'today_production': EntityDescription(
         device_class=DEVICE_CLASS_ENERGY,
         unit=UNIT_WATS_PER_HOUR,
@@ -142,14 +158,12 @@ class HassMqtt:
         self, mi_entities: List[str], port_entities: List[str], post_process: bool = True, expire_after: int = 0
     ) -> None:
         """Initialize the object.
-
         Arguments:
             mi_entities: names of microinverter entities that shall be handled by the builder
             port_entities: names of microinverter port entities that shall be handled by the builder
             post_process: if to cache energy production
             expire_after: number of seconds after which an entity state should expire. This setting is added to the
                           entity configuration. Applied only when `expire` flag is set in the entity description.
-
         """
         self._state_topics: Dict = {}
         self._config_topics: Dict = {}
@@ -223,10 +237,8 @@ class HassMqtt:
 
     def get_configs(self, plant_data: PlantData) -> Iterable[Tuple[str, str]]:
         """Get MQTT config messages for given data from DTU.
-
         Arguments:
             plant_data: data from DTU
-
         """
         for topic, payload in self._get_config_payloads('DTU', plant_data.dtu, DtuEntities):
             yield topic, payload
@@ -256,33 +268,40 @@ class HassMqtt:
             if description.value_converter:
                 value = description.value_converter(value)
             values[entity_name] = str(value)
-        payload = json.dumps(values)
+        payload = json.dumps(values) if len(values) else ''
         state_topic = self._get_state_topic(device_serial, port)
         return state_topic, payload
 
-    def _update_cache(self, plant_data: PlantData) -> None:
+    def _update_cache(self, plant_data: PlantData) -> bool:
+        cache_complete = True
         for microinverter in plant_data.microinverter_data:
             cache_key = (microinverter.serial_number, microinverter.port_number)
             if cache_key not in self._prod_today_cache:
                 self._prod_today_cache[cache_key] = ZERO
             if cache_key not in self._prod_total_cache:
                 self._prod_total_cache[cache_key] = ZERO
-            if microinverter.link_status:
-                self._prod_today_cache[cache_key] = microinverter.today_production
-                self._prod_total_cache[cache_key] = microinverter.total_production
+            if microinverter.link_status and microinverter.operating_status == 3:
+                if self._prod_today_cache[cache_key] < microinverter.today_production:
+                    self._prod_today_cache[cache_key] = microinverter.today_production
+                if self._prod_total_cache[cache_key] < microinverter.total_production:
+                    self._prod_total_cache[cache_key] = microinverter.total_production            
+            else:
+                cache_complete = False
+
+        return cache_complete
 
     def _process_plant_data(self, plant_data: PlantData) -> None:
-        self._update_cache(plant_data)
-        plant_data.today_production = sum(self._prod_today_cache.values()) if self._prod_today_cache else ZERO
-        plant_data.total_production = sum(self._prod_total_cache.values()) if self._prod_total_cache else ZERO
+        cache_complete = self._update_cache(plant_data)
+        # ZERO means do not send entity to MQTT <- _ignore_when_zero rule is set
+        plant_data.today_production = sum(self._prod_today_cache.values()) if cache_complete else ZERO
+        plant_data.total_production = sum(self._prod_total_cache.values()) if cache_complete else ZERO
 
     def get_states(self, plant_data: PlantData) -> Iterable[Tuple[str, str]]:
         """Get MQTT message for DTU data.
-
         Arguments:
             plant_data: data from DTU
-
         """
+
         if self._post_process:
             self._process_plant_data(plant_data)
         yield self._get_state(plant_data.dtu, DtuEntities, plant_data)
